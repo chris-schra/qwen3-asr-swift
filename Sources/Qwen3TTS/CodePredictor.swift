@@ -147,15 +147,21 @@ public class CodePredictorModel: Module {
     /// Present only when `config.talkerHiddenSize != config.hiddenSize` (e.g. 1.7B:
     /// talker outputs 2048-dim but the code predictor works in 1024-dim space).
     /// Weight key in safetensors: `code_predictor.small_to_mtp_projection`.
-    @ModuleInfo var smallToMTPProjection: Linear?
+    /// The 1.7B safetensors store this as a quantized layer with bias:
+    ///   small_to_mtp_projection.weight  [1024, 256] U32
+    ///   small_to_mtp_projection.scales  [1024, 32]  BF16
+    ///   small_to_mtp_projection.biases  [1024, 32]  BF16
+    ///   small_to_mtp_projection.bias    [1024]       BF16
+    @ModuleInfo var smallToMTPProjection: QuantizedLinear?
 
     public init(config: CodePredictorConfig) {
         self.config = config
 
         // Projection layer: only materialised when talker dim ≠ predictor dim
         if config.talkerHiddenSize != config.hiddenSize {
-            self._smallToMTPProjection.wrappedValue = Linear(
-                config.talkerHiddenSize, config.hiddenSize, bias: false)
+            self._smallToMTPProjection.wrappedValue = QuantizedLinear(
+                config.talkerHiddenSize, config.hiddenSize, bias: true,
+                groupSize: config.groupSize, bits: config.bits)
         } else {
             self._smallToMTPProjection.wrappedValue = nil
         }

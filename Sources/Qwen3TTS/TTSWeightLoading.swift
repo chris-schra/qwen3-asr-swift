@@ -144,6 +144,17 @@ public enum TTSWeightLoader {
                 from: cpWeights)
         }
 
+        // Projection from talker hidden size to code-predictor hidden size.
+        // Only present for 1.7B models where talkerHiddenSize != hiddenSize.
+        // The safetensors key (after stripping "talker.code_predictor.") is
+        // "small_to_mtp_projection".
+        if let proj = codePredictor.smallToMTPProjection {
+            CommonWeightLoader.applyQuantizedLinearWeights(
+                to: proj,
+                prefix: "small_to_mtp_projection",
+                from: cpWeights)
+        }
+
         print("Applied weights to Code Predictor (\(codePredictor.layers.count) layers)")
     }
 
