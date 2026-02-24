@@ -34,6 +34,11 @@ public struct TalkerConfig: Codable, Sendable {
 
 public struct CodePredictorConfig: Codable, Sendable {
     public var hiddenSize: Int = 1024
+    /// Hidden size of the Talker model whose output feeds the Code Predictor.
+    /// When `talkerHiddenSize != hiddenSize` (e.g. 1.7B: 2048 vs 1024) a
+    /// `smallToMTPProjection` linear layer is inserted to project down before
+    /// the transformer layers. Defaults to `hiddenSize` (no projection).
+    public var talkerHiddenSize: Int = 1024
     public var numLayers: Int = 5
     public var numHeads: Int = 16
     public var numKVHeads: Int = 8

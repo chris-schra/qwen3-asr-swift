@@ -1018,11 +1018,17 @@ public class Qwen3TTSModel {
     /// Execute a code predictor transformer step (layers + norm, no lm_head).
     /// For single-token steps (seqLen=1) where no attention mask is needed.
     /// Apply codePredictor.lmHeads[groupIndex] to the normed output separately.
+    ///
+    /// Applies `smallToMTPProjection` when `hidden` is in talker-hidden-size space
+    /// (e.g. 2048 for 1.7B). This handles the warmup path where `code0Embed` from
+    /// the talker embedding table is passed directly, as well as any caller that
+    /// passes talker-dimension tensors.
     private func executeCPTransformerStep(
         hidden: MLXArray, cache: [(MLXArray, MLXArray)]
     ) -> (normed: MLXArray, newCache: [(MLXArray, MLXArray)]) {
+        let projected = codePredictor.projectTalkerHidden(hidden)
         guard let compiled = compiledCPTransformer else {
-            var h = hidden
+            var h = projected
             var newCache: [(MLXArray, MLXArray)] = []
             for (i, layer) in codePredictor.layers.enumerated() {
                 let (output, updated) = layer(h, attentionMask: nil, cache: cache[i])
@@ -1031,7 +1037,7 @@ public class Qwen3TTSModel {
             }
             return (codePredictor.norm(h), newCache)
         }
-        var flatInputs = [hidden]
+        var flatInputs = [projected]
         for (k, v) in cache { flatInputs.append(k); flatInputs.append(v) }
         let out = compiled(flatInputs)
         var newCache: [(MLXArray, MLXArray)] = []
@@ -1475,7 +1481,15 @@ public extension Qwen3TTSModel {
             parsedSpeakerConfig = try? parseSpeakerConfig(from: configPath)
         }
 
-        let model = Qwen3TTSModel(config: Qwen3TTSConfig(talker: dynamicTalkerConfig))
+        var cpConfig = CodePredictorConfig()
+        cpConfig.talkerHiddenSize = dynamicTalkerConfig.hiddenSize
+        cpConfig.bits = dynamicTalkerConfig.bits
+        cpConfig.groupSize = dynamicTalkerConfig.groupSize
+
+        print("[tts-config] talker: hiddenSize=\(dynamicTalkerConfig.hiddenSize), intermediateSize=\(dynamicTalkerConfig.intermediateSize), bits=\(dynamicTalkerConfig.bits)")
+        print("[tts-config] codePredictor: talkerHiddenSize=\(cpConfig.talkerHiddenSize), hiddenSize=\(cpConfig.hiddenSize)")
+
+        let model = Qwen3TTSModel(config: Qwen3TTSConfig(talker: dynamicTalkerConfig, codePredictor: cpConfig))
         model.speakerConfig = parsedSpeakerConfig
 
         // Load tokenizer

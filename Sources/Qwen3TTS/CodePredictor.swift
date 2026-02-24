@@ -143,8 +143,22 @@ public class CodePredictorModel: Module {
     // 15 lm_head projections (one per remaining codebook group, quantized)
     @ModuleInfo var lmHeads: [QuantizedLinear]
 
+    /// Optional projection from talker hidden size to code-predictor hidden size.
+    /// Present only when `config.talkerHiddenSize != config.hiddenSize` (e.g. 1.7B:
+    /// talker outputs 2048-dim but the code predictor works in 1024-dim space).
+    /// Weight key in safetensors: `code_predictor.small_to_mtp_projection`.
+    @ModuleInfo var smallToMTPProjection: Linear?
+
     public init(config: CodePredictorConfig) {
         self.config = config
+
+        // Projection layer: only materialised when talker dim ≠ predictor dim
+        if config.talkerHiddenSize != config.hiddenSize {
+            self._smallToMTPProjection.wrappedValue = Linear(
+                config.talkerHiddenSize, config.hiddenSize, bias: false)
+        } else {
+            self._smallToMTPProjection.wrappedValue = nil
+        }
 
         // 15 embedding tables for codebook groups 2-16 (index 0-14)
         self._codecEmbeddings.wrappedValue = (0..<(config.numCodeGroups - 1)).map { _ in
@@ -166,6 +180,28 @@ public class CodePredictorModel: Module {
         super.init()
     }
 
+    /// Project talker hidden states to the code-predictor's own hidden dimension.
+    ///
+    /// During prefill the input is `[talker_hidden, code_0_embed]` — both tokens are
+    /// in `talkerHiddenSize` space (e.g. 2048 for 1.7B) because `code_0_embed` comes
+    /// from the talker's own codec embedding table which also uses `talkerHiddenSize`.
+    /// During autoregressive decode the input is a single token from
+    /// `codePredictor.embedCodecGroup`, which is already in `hiddenSize` (1024) space,
+    /// so no projection is needed.
+    ///
+    /// We distinguish the two cases by checking the last dimension of the input:
+    /// if it matches `talkerHiddenSize` we project, otherwise we pass through unchanged.
+    ///
+    /// - Parameter hiddenStates: [B, T, D] — D is either talkerHiddenSize or hiddenSize
+    /// - Returns: [B, T, hiddenSize]
+    private func projectIfNeeded(_ hiddenStates: MLXArray) -> MLXArray {
+        guard let proj = smallToMTPProjection else { return hiddenStates }
+        // Only project when the input is in talkerHiddenSize space.
+        // autoregressive decode steps arrive in hiddenSize space and must pass through.
+        guard hiddenStates.dim(2) == config.talkerHiddenSize else { return hiddenStates }
+        return proj(hiddenStates)
+    }
+
     /// Predict a specific codebook group
     /// - Parameters:
     ///   - inputsEmbeds: Hidden states from previous step [B, T, D]
@@ -177,7 +213,7 @@ public class CodePredictorModel: Module {
         groupIndex: Int,
         cache: [(MLXArray, MLXArray)]? = nil
     ) -> (MLXArray, [(MLXArray, MLXArray)]) {
-        var hiddenStates = inputsEmbeds
+        var hiddenStates = projectIfNeeded(inputsEmbeds)
 
         let seqLen = hiddenStates.dim(1)
         let mask: MLXArray?
@@ -214,7 +250,7 @@ public class CodePredictorModel: Module {
     public func predictAllGroupsParallel(
         inputsEmbeds: MLXArray
     ) -> [MLXArray] {
-        var hiddenStates = inputsEmbeds
+        var hiddenStates = projectIfNeeded(inputsEmbeds)
 
         // Build causal mask for length 2
         let mask = MLXArray([Float(0), Float(-1e9), Float(0), Float(0)])
@@ -229,6 +265,14 @@ public class CodePredictorModel: Module {
 
         let lastHidden = hiddenStates[0..., 1..<2, 0...]  // [1, 1, D]
         return lmHeads.map { $0(lastHidden) }
+    }
+
+    /// Project hidden states from talker dimension to code-predictor dimension.
+    /// A no-op when `talkerHiddenSize == hiddenSize` (0.6B models).
+    /// Call this when passing talker-produced embeddings to `executeCPTransformerStep`
+    /// (which skips `callAsFunction` and accesses layers directly).
+    public func projectTalkerHidden(_ hidden: MLXArray) -> MLXArray {
+        projectIfNeeded(hidden)
     }
 
     /// Embed a token for a specific codebook group
