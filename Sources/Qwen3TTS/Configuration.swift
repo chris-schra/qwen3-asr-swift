@@ -21,6 +21,13 @@ public struct TalkerConfig: Codable, Sendable {
     public init() {}
 
     public static var base06B: TalkerConfig { TalkerConfig() }
+
+    public static var base17B: TalkerConfig {
+        var c = TalkerConfig()
+        c.hiddenSize = 2048
+        c.intermediateSize = 6144
+        return c
+    }
 }
 
 // MARK: - Code Predictor Config
@@ -164,6 +171,12 @@ public struct StreamingConfig: Sendable {
 public enum TTSModelVariant: String, CaseIterable, Sendable {
     case base = "mlx-community/Qwen3-TTS-12Hz-0.6B-Base-4bit"
     case customVoice = "mlx-community/Qwen3-TTS-12Hz-0.6B-CustomVoice-4bit"
+    case base17B4bit = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-4bit"
+    case base17B8bit = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit"
+    case base17BBf16 = "mlx-community/Qwen3-TTS-12Hz-1.7B-Base-bf16"
+    case customVoice17B4bit = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-4bit"
+    case customVoice17B8bit = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-8bit"
+    case customVoice17BBf16 = "mlx-community/Qwen3-TTS-12Hz-1.7B-CustomVoice-bf16"
 }
 
 // MARK: - Combined TTS Config
@@ -185,5 +198,9 @@ public struct Qwen3TTSConfig: Codable, Sendable {
 
     public static var base06B: Qwen3TTSConfig {
         Qwen3TTSConfig()
+    }
+
+    public static var base17B: Qwen3TTSConfig {
+        Qwen3TTSConfig(talker: .base17B)
     }
 }

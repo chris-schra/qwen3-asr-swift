@@ -1438,8 +1438,6 @@ public extension Qwen3TTSModel {
     ) async throws -> Qwen3TTSModel {
         progressHandler?(0.05, "Preparing download...")
 
-        let model = Qwen3TTSModel()
-
         // Download main model weights
         let mainCacheDir = try HuggingFaceDownloader.getCacheDirectory(for: modelId)
         if !HuggingFaceDownloader.weightsExist(in: mainCacheDir) {
@@ -1465,11 +1463,20 @@ public extension Qwen3TTSModel {
                 })
         }
 
-        // Parse config.json for speaker config
+        // Parse config.json: derive TalkerConfig and SpeakerConfig dynamically so the same
+        // code path works for any model size (0.6B, 1.7B, future variants).
         let configPath = mainCacheDir.appendingPathComponent("config.json")
+        var dynamicTalkerConfig = TalkerConfig()
+        var parsedSpeakerConfig: SpeakerConfig?
         if FileManager.default.fileExists(atPath: configPath.path) {
-            model.speakerConfig = try? parseSpeakerConfig(from: configPath)
+            if let talker = try? parseTalkerConfig(from: configPath, modelId: modelId) {
+                dynamicTalkerConfig = talker
+            }
+            parsedSpeakerConfig = try? parseSpeakerConfig(from: configPath)
         }
+
+        let model = Qwen3TTSModel(config: Qwen3TTSConfig(talker: dynamicTalkerConfig))
+        model.speakerConfig = parsedSpeakerConfig
 
         // Load tokenizer
         progressHandler?(0.6, "Loading tokenizer...")
@@ -1537,5 +1544,61 @@ public extension Qwen3TTSModel {
             speakerIds: speakerIds,
             speakerDialects: speakerDialects,
             codecLanguageIds: codecLanguageIds)
+    }
+
+    /// Derive a `TalkerConfig` by reading `talker_config` from the model's `config.json`.
+    ///
+    /// Falls back to a default `TalkerConfig()` (0.6B values) for any field that is absent,
+    /// so existing cached 0.6B models continue to work without re-downloading.
+    ///
+    /// Quantization is resolved in priority order:
+    /// 1. Explicit `quantization` / `quantization_config` block in config.json
+    /// 2. Suffix in the `modelId` string ("4bit", "8bit", "bf16")
+    /// 3. Defaults already encoded in `TalkerConfig` (bits=4, groupSize=64)
+    private static func parseTalkerConfig(from path: URL, modelId: String) throws -> TalkerConfig {
+        let data = try Data(contentsOf: path)
+        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return TalkerConfig()
+        }
+
+        var config = TalkerConfig()
+
+        // Architecture fields live inside talker_config
+        if let tc = json["talker_config"] as? [String: Any] {
+            if let v = tc["hidden_size"] as? Int { config.hiddenSize = v }
+            if let v = tc["intermediate_size"] as? Int { config.intermediateSize = v }
+            if let v = tc["num_hidden_layers"] as? Int { config.numLayers = v }
+            if let v = tc["num_attention_heads"] as? Int { config.numHeads = v }
+            if let v = tc["num_key_value_heads"] as? Int { config.numKVHeads = v }
+            if let v = tc["head_dim"] as? Int { config.headDim = v }
+            if let v = tc["text_hidden_size"] as? Int { config.textHiddenSize = v }
+            if let v = tc["text_vocab_size"] as? Int { config.textVocabSize = v }
+            if let v = tc["vocab_size"] as? Int { config.codecVocabSize = v }
+            if let v = tc["rope_theta"] as? Double { config.ropeTheta = Float(v) }
+            if let v = tc["rms_norm_eps"] as? Double { config.rmsNormEps = Float(v) }
+            if let v = tc["mrope_section"] as? [Int] { config.mropeSections = v }
+        }
+
+        // Quantization: prefer explicit config block, fall back to model ID suffix
+        let quantBlock =
+            json["quantization"] as? [String: Any]
+            ?? json["quantization_config"] as? [String: Any]
+        if let qb = quantBlock {
+            if let bits = qb["bits"] as? Int { config.bits = bits }
+            if let gs = qb["group_size"] as? Int { config.groupSize = gs }
+        } else {
+            let lower = modelId.lowercased()
+            if lower.contains("bf16") {
+                // bf16 = full precision, no quantization — signal with bits=0
+                config.bits = 0
+            } else if lower.contains("8bit") || lower.contains("-8b") {
+                config.bits = 8
+            } else if lower.contains("4bit") || lower.contains("-4b") {
+                config.bits = 4
+            }
+            // Otherwise keep TalkerConfig default (bits=4)
+        }
+
+        return config
     }
 }
